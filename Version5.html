@@ -1,0 +1,263 @@
+<!doctype html>
+<html lang="uk">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Clustered Neuron Network — with Pulsing Halos (fixed)</title>
+<style>
+  html,body{height:100%;margin:0;background:#050509;overflow:hidden}
+  canvas{display:block}
+  /* невелика зрозуміла підказка: натисни F11 для іммерсії */
+</style>
+</head>
+<body>
+<canvas id="neuronCanvas"></canvas>
+<script>
+/*
+  Clustered neuron visualization (2D canvas)
+  - кластери з пульсуючими ореолами (gradients)
+  - нейрони по типах (exc / inh / mod) з дендритами
+  - туманні частинки, зв'язки всередині/між кластерами
+  - простий, швидкий і читабельний код (щоб можна було модифікувати)
+*/
+
+// --------- конфігурація ---------
+const CANVAS = document.getElementById('neuronCanvas'); 
+const ctx = CANVAS.getContext('2d');
+function resize(){ CANVAS.width = innerWidth; CANVAS.height = innerHeight; }
+window.addEventListener('resize', resize);
+resize();
+
+const CLUSTERS = 5;
+const NEURONS_PER_CLUSTER = 14;
+const NEURON_TYPES = ['excitatory','inhibitory','modulatory'];
+const PARTICLES_FOG = 450;   // сірі туманні частинки (по всьому простору)
+const PARTICLES_NET = 1400;  // частинки між нейронами (енергія)
+const CLUSTER_RADIUS = 120;
+
+// --------- дані сцені ---------
+const clusters = []; // {cx,cy, hue, radius, pulseOffset}
+const neurons = [];  // {x,y,type,clusterId,connections,dendrites,baseColor}
+const fogParticles = [];
+const netParticles = [];
+
+// корисні утиліти
+const rand = (a,b)=> a + Math.random()*(b-a);
+const rndInt = (a,b)=> Math.floor(rand(a,b+1));
+const circlePoint = (cx,cy,r,ang)=> ({x: cx + Math.cos(ang)*r, y: cy + Math.sin(ang)*r});
+
+// --------- ініціалізація кластерів ---------
+for(let c=0;c<CLUSTERS;c++){
+  const cx = rand(0.15,0.85)*CANVAS.width;
+  const cy = rand(0.15,0.85)*CANVAS.height;
+  // різні відтінки для ореолу (hue)
+  const hue = Math.floor(rand(200,330)) - c*10 + (c%2?20:0);
+  clusters.push({
+    cx, cy,
+    hue,
+    radius: CLUSTER_RADIUS * (0.8 + Math.random()*0.6),
+    pulseOffset: Math.random()*Math.PI*2
+  });
+}
+
+// --------- створення нейронів в кластерах ---------
+for(let c=0;c<CLUSTERS;c++){
+  const cl = clusters[c];
+  const count = NEURONS_PER_CLUSTER;
+  for(let i=0;i<count;i++){
+    const ang = Math.random()*Math.PI*2;
+    const r = Math.sqrt(Math.random()) * cl.radius; // щільніше в середині
+    const x = cl.cx + Math.cos(ang)*r + rand(-12,12);
+    const y = cl.cy + Math.sin(ang)*r + rand(-10,10);
+    const type = NEURON_TYPES[rndInt(0,NEURON_TYPES.length-1)];
+    // кольори базові для типів (rgba multipliers)
+    let baseColor;
+    if(type==='excitatory') baseColor = '100,150,255';
+    else if(type==='inhibitory') baseColor = '255,150,90';
+    else baseColor = '230,230,110';
+    // дендрити
+    const dendrites = [];
+    const dCount = rndInt(5,9);
+    for(let d=0; d<dCount; d++){
+      dendrites.push({ angle: Math.random()*Math.PI*2, length: rand(18,46)});
+    }
+    neurons.push({
+      x,y,type,clusterId:c,connections:[],dendrites,baseColor
+    });
+  }
+}
+
+// --------- зв'язки: щільніше всередині кластера, рідше між кластерами ---------
+for(let i=0;i<neurons.length;i++){
+  const a = neurons[i];
+  // внутрішні зв'язки (ймовірність залежить від кластеру)
+  for(let j=0;j<neurons.length;j++){
+    if(i===j) continue;
+    const b = neurons[j];
+    const sameCluster = (a.clusterId===b.clusterId);
+    const p = sameCluster ? 0.18 : 0.02; // плотніші зв'язки всередині
+    if(Math.random() < p) a.connections.push(j);
+  }
+}
+
+// --------- частинки мережі (між нейронами) ---------
+for(let i=0;i<PARTICLES_NET;i++){
+  // заданий шлях між двома нейронами (буде анімовано)
+  const n1 = rndInt(0,neurons.length-1);
+  const n2 = rndInt(0,neurons.length-1);
+  netParticles.push({
+    a:n1, b:n2, t:Math.random(), speed: rand(0.0006,0.0025), size: rand(0.6,2.2)
+  });
+}
+
+// --------- сірий туман по всьому простору ---------
+for(let i=0;i<PARTICLES_FOG;i++){
+  fogParticles.push({
+    x: rand(-0.5,1.5)*CANVAS.width, // розширюємо за межі, щоб частинки заходили
+    y: rand(-0.5,1.5)*CANVAS.height,
+    vx: rand(-0.02,0.02), vy: rand(-0.02,0.02),
+    base: 0.25 + Math.random()*0.35,
+    size: rand(2,6)
+  });
+}
+
+// --------- прості ефекти (пульсація / рух) ---------
+let mouseX = CANVAS.width/2, mouseY = CANVAS.height/2;
+window.addEventListener('mousemove', e=>{
+  mouseX = e.clientX; mouseY = e.clientY;
+});
+
+// --------- малювання ореолу для кластера (grad + pulsing) ---------
+function drawClusterHalo(cl, time){
+  // pulse factor [0.85 .. 1.25]
+  const pulse = 0.9 + 0.35 * (0.5 + 0.5*Math.sin(time*1.4 + cl.pulseOffset));
+  const r = cl.radius * 2.1 * pulse;
+  const cx = cl.cx, cy = cl.cy;
+  // radial gradient: сильніше в центрі, прозоро зовні
+  const g = ctx.createRadialGradient(cx,cy, r*0.05, cx,cy, r);
+  const h = cl.hue;
+  // center: stronger color with alpha; edge: transparent
+  g.addColorStop(0, `hsla(${h},80%,55%,0.20)`);
+  g.addColorStop(0.35, `hsla(${h},70%,45%,0.10)`);
+  g.addColorStop(1, `hsla(${h},70%,45%,0.0)`);
+  ctx.fillStyle = g;
+  ctx.beginPath();
+  ctx.arc(cx,cy,r,0,Math.PI*2);
+  ctx.fill();
+}
+
+// --------- малюємо все кожен кадр ---------
+function render(now){
+  const time = now * 0.001;
+  // напівпрозоре затемнення для motion-trail
+  ctx.fillStyle = 'rgba(5,6,9,0.18)';
+  ctx.fillRect(0,0,CANVAS.width,CANVAS.height);
+
+  // --- halo для кожного кластера (малюємо спочатку) ---
+  for(const cl of clusters){
+    drawClusterHalo(cl, time);
+  }
+
+  // --- туманні сірі частинки (global fog) ---
+  for(const p of fogParticles){
+    p.x += p.vx * 60; // scale швидкості під час рендеру
+    p.y += p.vy * 60;
+    // циклічна позиція
+    if(p.x < -CANVAS.width*0.5) p.x = CANVAS.width*1.5;
+    if(p.x > CANVAS.width*1.5) p.x = -CANVAS.width*0.5;
+    if(p.y < -CANVAS.height*0.5) p.y = CANVAS.height*1.5;
+    if(p.y > CANVAS.height*1.5) p.y = -CANVAS.height*0.5;
+    const alpha = Math.max(0.05, Math.min(0.6, p.base + 0.12*Math.sin(time + p.x*0.002 + p.y*0.002)));
+    ctx.fillStyle = `rgba(180,180,180,${alpha})`;
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, p.size, 0, Math.PI*2);
+    ctx.fill();
+  }
+
+  // --- зв'язки (біля cluster: більш тверді) ---
+  ctx.lineWidth = 1;
+  for(let i=0;i<neurons.length;i++){
+    const a = neurons[i];
+    // внутрішні зв'язки трохи сильніші за колір кластера
+    const clusterHue = clusters[a.clusterId].hue;
+    for(const j of a.connections){
+      const b = neurons[j];
+      // тонкість лінії залежить від відстані і кластерної належності (можна розвинути)
+      const same = (a.clusterId === b.clusterId);
+      ctx.strokeStyle = same ? `hsla(${clusterHue},60%,70%,0.12)` : 'rgba(90,100,120,0.04)';
+      ctx.beginPath();
+      ctx.moveTo(a.x, a.y);
+      ctx.lineTo(b.x, b.y);
+      ctx.stroke();
+    }
+  }
+
+  // --- мережеві частинки (енергія по зв'язкам) ---
+  for(const p of netParticles){
+    p.t += p.speed;
+    if(p.t>1){ p.t = 0; /* можна ресетити або змінити шлях динамічно */ }
+    const A = neurons[p.a], B = neurons[p.b];
+    // інтерполяція
+    const ix = A.x + (B.x - A.x)*p.t;
+    const iy = A.y + (B.y - A.y)*p.t;
+    // колір — залежить від типу нейрона-джерела
+    const srcCol = A.baseColor; // наприклад '100,150,255'
+    ctx.fillStyle = `rgba(${srcCol},0.65)`;
+    ctx.beginPath();
+    ctx.arc(ix, iy, p.size, 0, Math.PI*2);
+    ctx.fill();
+  }
+
+  // --- малюємо нейрони поверх (щоб були над ореолом і туманом) ---
+  for(const n of neurons){
+    // пульсація, частота залежить від типу
+    const freq = (n.type==='excitatory'?1.6 : (n.type==='inhibitory'?2.4:1.2));
+    const pulse = 1 + 0.14*Math.sin(time*freq + (n.x+n.y)*0.01);
+    const rBase = (n.type==='excitatory'?4.8 : (n.type==='inhibitory'?4.0:5.2));
+    const radius = rBase * pulse * (1 + 0.06*Math.cos(time*0.9 + n.clusterId));
+    // дендрити (тонкі лінії)
+    ctx.lineWidth = 1;
+    for(const d of n.dendrites){
+      const dx = Math.cos(d.angle) * d.length;
+      const dy = Math.sin(d.angle) * d.length;
+      // трохи затемнити дендрити
+      ctx.strokeStyle = `rgba(${n.baseColor},0.18)`;
+      ctx.beginPath();
+      ctx.moveTo(n.x, n.y);
+      ctx.lineTo(n.x + dx*0.9, n.y + dy*0.9);
+      ctx.stroke();
+    }
+    // тіло нейрона
+    ctx.beginPath();
+    ctx.arc(n.x, n.y, radius, 0, Math.PI*2);
+    ctx.fillStyle = `rgba(${n.baseColor},0.95)`;
+    ctx.fill();
+    // м'який зовнішній ореол навколо кожного нейрона (щоб зливатися з cluster halo)
+    ctx.beginPath();
+    ctx.arc(n.x, n.y, radius*2.6, 0, Math.PI*2);
+    ctx.fillStyle = `rgba(${n.baseColor},0.06)`;
+    ctx.fill();
+  }
+
+  // --- підказка: слабкий фокус під мишею (візуальний інтерес) ---
+  ctx.beginPath();
+  ctx.arc(mouseX, mouseY, 48, 0, Math.PI*2);
+  ctx.fillStyle = 'rgba(255,255,255,0.01)';
+  ctx.fill();
+
+  requestAnimationFrame(render);
+}
+
+// старт
+requestAnimationFrame(render);
+
+// адаптація при зміні розміру — переміщуємо кластери в межі
+window.addEventListener('resize', ()=>{
+  clusters.forEach(cl=>{
+    cl.cx = Math.max(80, Math.min(innerWidth-80, cl.cx));
+    cl.cy = Math.max(80, Math.min(innerHeight-80, cl.cy));
+  });
+});
+</script>
+</body>
+</html>

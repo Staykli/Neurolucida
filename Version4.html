@@ -1,0 +1,225 @@
+
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Neuron Network with Clusters and Types</title>
+<style>
+  body{margin:0;background:#0b0b10;overflow:hidden}
+  canvas{display:block}
+</style>
+</head>
+<body>
+<script type="module">
+import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.154.0/build/three.module.js';
+
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(50, innerWidth/innerHeight, 0.1, 3000);
+camera.position.set(0,0,600);
+
+const renderer = new THREE.WebGLRenderer({antialias:true, alpha:true});
+renderer.setSize(innerWidth,innerHeight);
+document.body.appendChild(renderer.domElement);
+
+scene.add(new THREE.DirectionalLight(0xffffff,0.8));
+scene.add(new THREE.AmbientLight(0x555555));
+
+// ===== NEURON TYPES & CLUSTERS =====
+const neuronTypes = [
+    {name:'Excitatory', color:[0.4,0.6,1], size:1.2, pulseAmp:25},
+    {name:'Inhibitory', color:[1,0.6,0.2], size:1.0, pulseAmp:20},
+    {name:'Modulatory', color:[1,1,0.3], size:1.1, pulseAmp:15}
+];
+
+const neurons = 60;
+const clusters = 4;
+const clusterRadius = 150;
+let neuronCenters=[], neuronTypeIndex=[], neuronPulse=[];
+
+for(let c=0;c<clusters;c++){
+    const clusterCenter = new THREE.Vector3(
+        (Math.random()-0.5)*400,
+        (Math.random()-0.5)*400,
+        (Math.random()-0.5)*400
+    );
+    for(let i=0;i<Math.floor(neurons/clusters);i++){
+        const angle = Math.random()*Math.PI*2;
+        const radius = Math.random()*clusterRadius;
+        const pos = new THREE.Vector3(
+            clusterCenter.x + Math.cos(angle)*radius,
+            clusterCenter.y + (Math.random()-0.5)*30,
+            clusterCenter.z + Math.sin(angle)*radius
+        );
+        neuronCenters.push(pos);
+        neuronTypeIndex.push(Math.floor(Math.random()*neuronTypes.length));
+        neuronPulse.push(0);
+    }
+}
+
+// ===== BRANCHES =====
+let positions=[], colors=[], distances=[], neuronOffsets=[];
+const maxDepth = 6;
+const baseBranchLen = 18;
+
+function addBranch(x,y,z,dir,depth,dist,neuronIndex){
+    if(depth>maxDepth) return;
+    const type = neuronTypes[neuronTypeIndex[neuronIndex]];
+    const len = baseBranchLen*(0.7 + Math.random()*0.6);
+    const nx = x + dir.x*len + (Math.random()-0.5)*4;
+    const ny = y + dir.y*len + (Math.random()-0.5)*4;
+    const nz = z + dir.z*len + (Math.random()-0.5)*4;
+
+    positions.push(x,y,z,nx,ny,nz);
+    colors.push(...type.color,...type.color);
+    distances.push(dist,dist+len);
+    neuronOffsets.push(neuronIndex,neuronIndex);
+
+    const nChildren = depth<2?3:(Math.random()>0.6?2:1);
+    for(let i=0;i<nChildren;i++){
+        const angle = Math.random()*Math.PI*2;
+        const tilt = (Math.random()-0.5)*0.7;
+        const ndir = new THREE.Vector3(
+            dir.x*0.6 + Math.cos(angle)*0.6 + tilt*0.2,
+            dir.y*0.6 + Math.sin(angle)*0.6 + (Math.random()-0.5)*0.2,
+            dir.z*0.6 + (Math.random()-0.5)*0.4
+        ).normalize();
+        addBranch(nx,ny,nz,ndir,depth+1,dist+len,neuronIndex);
+    }
+}
+
+// Generate all branches
+for(let n=0;n<neuronCenters.length;n++){
+    const pos = neuronCenters[n];
+    addBranch(pos.x,pos.y,pos.z,new THREE.Vector3(0,1,0),0,0,n);
+}
+
+// Branch geometry
+const geom = new THREE.BufferGeometry();
+geom.setAttribute('position', new THREE.Float32BufferAttribute(positions,3));
+geom.setAttribute('color', new THREE.Float32BufferAttribute(colors,3));
+geom.setAttribute('dist', new THREE.Float32BufferAttribute(distances,1));
+geom.setAttribute('neuron', new THREE.Float32BufferAttribute(neuronOffsets,1));
+const material = new THREE.LineBasicMaterial({vertexColors:true, transparent:true});
+const lines = new THREE.LineSegments(geom,material);
+scene.add(lines);
+
+// ===== PARTICLES BETWEEN NEURONS =====
+const particleCount = 2000;
+const particlePositions = new Float32Array(particleCount*3);
+const particleColors = new Float32Array(particleCount*3);
+for(let i=0;i<particleCount;i++){
+    const n1 = Math.floor(Math.random()*neuronCenters.length);
+    const n2 = Math.floor(Math.random()*neuronCenters.length);
+
+const pos = new THREE.Vector3().lerpVectors(neuronCenters[n1], neuronCenters[n2], Math.random());
+    particlePositions[i*3] = pos.x;
+    particlePositions[i*3+1] = pos.y;
+    particlePositions[i*3+2] = pos.z;
+    particleColors[i*3] = 0.2;
+    particleColors[i*3+1] = 0.4;
+    particleColors[i*3+2] = 1.0;
+}
+const particleGeom = new THREE.BufferGeometry();
+particleGeom.setAttribute('position', new THREE.BufferAttribute(particlePositions,3));
+particleGeom.setAttribute('color', new THREE.BufferAttribute(particleColors,3));
+const particleMat = new THREE.PointsMaterial({vertexColors:true,size:2,transparent:true,opacity:0.6});
+const particles = new THREE.Points(particleGeom, particleMat);
+scene.add(particles);
+
+// ===== GREY FOG PARTICLES =====
+const fogParticleCount = 3000;
+const fogPositions = new Float32Array(fogParticleCount*3);
+const fogColors = new Float32Array(fogParticleCount*3);
+for(let i=0;i<fogParticleCount;i++){
+    fogPositions[i*3] = (Math.random()-0.5)*800;
+    fogPositions[i*3+1] = (Math.random()-0.5)*800;
+    fogPositions[i*3+2] = (Math.random()-0.5)*800;
+    const c = 0.3 + Math.random()*0.2;
+    fogColors[i*3] = c;
+    fogColors[i*3+1] = c;
+    fogColors[i*3+2] = c;
+}
+const fogGeom = new THREE.BufferGeometry();
+fogGeom.setAttribute('position', new THREE.BufferAttribute(fogPositions,3));
+fogGeom.setAttribute('color', new THREE.BufferAttribute(fogColors,3));
+const fogMat = new THREE.PointsMaterial({vertexColors:true,size:4,transparent:true,opacity:0.3});
+const fogParticles = new THREE.Points(fogGeom,fogMat);
+scene.add(fogParticles);
+
+// ===== INTERACTION =====
+let mouseX=0, mouseY=0;
+document.addEventListener('mousemove', e=>{
+    mouseX = (e.clientX/innerWidth -0.5)*2;
+    mouseY = (e.clientY/innerHeight -0.5)*2;
+});
+
+// ===== ANIMATE =====
+const colAttr = geom.getAttribute('color');
+const distAttr = geom.getAttribute('dist');
+const neuronAttr = geom.getAttribute('neuron');
+const partPosAttr = particleGeom.getAttribute('position');
+const partColAttr = particleGeom.getAttribute('color');
+const fogPosAttr = fogGeom.getAttribute('position');
+const fogColAttr = fogGeom.getAttribute('color');
+
+function voltageToRgb(v,typeIndex){
+    const baseColor = neuronTypes[typeIndex].color;
+    const t = (v+80)/25;
+    const r = baseColor[0]*(0.5 + 0.5*t);
+    const g = baseColor[1]*(0.5 + 0.5*t);
+    const b = baseColor[2]*(0.5 + 0.5*t);
+    return [r,g,b];
+}
+
+const baseV=-80, amp=25;
+
+function animate(t){
+    requestAnimationFrame(animate);
+    const time = t*0.001;
+
+    // Camera
+    camera.position.x += (mouseX*600 - camera.position.x)*0.05;
+    camera.position.y += (-mouseY*400 - camera.position.y)*0.05;
+    camera.lookAt(0,0,0);
+
+    // Branches
+    for(let i=0;i<distAttr.count;i++){
+        const d = distAttr.getX(i);
+        const neuronIndex = neuronAttr.getX(i);
+        const typeIndex = neuronTypeIndex[neuronIndex];
+        const v = baseV + amp*Math.sin(time*6 - d*0.02*6);
+        const [r,g,b] = voltageToRgb(v,typeIndex);
+        colAttr.setXYZ(i,r,g,b);
+    }
+    colAttr.needsUpdate=true;
+
+    // Particles between neurons
+    for(let i=0;i<particleCount;i++){
+        const n1=Math.floor(Math.random()*neuronCenters.length);
+        const n2=Math.floor(Math.random()*neuronCenters.length);
+        const tPart = (Math.sin(time*0.5 + i)*0.5+0.5);
+        const pos=new THREE.Vector3().lerpVectors(neuronCenters[n1],neuronCenters[n2],tPart);
+        partPosAttr.setXYZ(i,pos.x,pos.y,pos.z);
+    }
+    partPosAttr.needsUpdate=true;
+
+    // Fog
+    for(let i=0;i<fogParticleCount;i++){
+        fogPositions[i*3+1] += Math.sin(time*0.1 + i)*0.05;
+        if(fogPositions[i*3+1]>400) fogPositions[i*3+1] = -400;
+    }
+    fogPosAttr.needsUpdate=true;
+
+    renderer.render(scene,camera);
+}
+animate(0);
+
+window.addEventListener('resize',()=>{
+    camera.aspect=innerWidth/innerHeight;
+    camera.updateProjectionMatrix();
+    renderer.setSize(innerWidth,innerHeight);
+});
+</script>
+</body>
+</html>

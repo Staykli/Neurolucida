@@ -1,0 +1,362 @@
+
+<!doctype html>
+<html lang="uk">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>3D Neuron Clusters — Colored Neurons + Volumetric Halos</title>
+<style>
+  html,body{height:100%;margin:0;background:#05050a;overflow:hidden}
+  canvas{display:block}
+</style>
+</head>
+<body>
+<script type="module">
+import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.154.0/build/three.module.js';
+
+///// — Сцена / рендерер / камера — /////
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(55, innerWidth/innerHeight, 0.1, 6000);
+camera.position.set(0,200,900);
+const renderer = new THREE.WebGLRenderer({antialias:true});
+renderer.setSize(innerWidth, innerHeight);
+renderer.setPixelRatio(Math.min(devicePixelRatio,2));
+document.body.appendChild(renderer.domElement);
+scene.add(new THREE.AmbientLight(0x666666,1.0));
+const sun = new THREE.DirectionalLight(0xffffff, 0.6); sun.position.set(1,1,0.3); scene.add(sun);
+
+///// — Параметри — /////
+const CLUSTERS = 5;
+const NEURONS_PER_CLUSTER = 70; // підбери під свій ПК
+const CLUSTER_RADIUS = 150;
+const SPACE = 1000;
+
+const TYPES = ['excitatory','inhibitory','modulatory'];
+const TYPE_COLORS = {
+  excitatory: new THREE.Color(0x8fbcff),
+  inhibitory: new THREE.Color(0xffb07a),
+  modulatory: new THREE.Color(0xf5f07a)
+};
+
+///// — Контейнери — /////
+const clusterCenters = [];
+const clusterHue = [];            // основний відтінок кластера (hue)
+const neuronList = [];            // {pos, cluster, type}
+const neuronPositions = [];
+const neuronColors = [];
+
+///// — Генерація кластерів і нейронів — /////
+for(let ci=0; ci<CLUSTERS; ci++){
+  // випадковий центр кластеру в просторі
+  const center = new THREE.Vector3(
+    (Math.random()-0.5)*SPACE*0.7,
+    (Math.random()-0.2)*SPACE*0.25,
+    (Math.random()-0.5)*SPACE*0.7
+  );
+  clusterCenters.push(center);
+  // вибираємо унікальний hue для кластеру (0..360)
+  clusterHue.push( 30 + ci * (360/CLUSTERS) + (Math.random()*40-20) );
+
+  for(let i=0;i<NEURONS_PER_CLUSTER;i++){
+    const r = Math.sqrt(Math.random()) * CLUSTER_RADIUS;
+    const theta = Math.random()*Math.PI*2;
+    const phi = Math.acos(2*Math.random()-1);
+    const offset = new THREE.Vector3(
+      r*Math.sin(phi)*Math.cos(theta),
+      r*Math.cos(phi)*0.45,
+      r*Math.sin(phi)*Math.sin(theta)
+    );
+    const p = new THREE.Vector3().addVectors(center, offset);
+    // тип нейрона (можемо використовувати типи для додаткового паттерну)
+    const type = TYPES[Math.floor(Math.random()*TYPES.length)];
+    neuronList.push({pos:p.clone(), cluster:ci, type});
+    neuronPositions.push(p.x, p.y, p.z);
+
+    // колір нейрона: беремо базовий hue кластеру + трохи варіюємо насиченість і яскравість
+    const hue = (clusterHue[ci] + (Math.random()*30-15))/360;
+    const sat = 0.6 + Math.random()*0.25;
+    const light = 0.45 + (type==='excitatory'?0.05: (type==='inhibitory'? -0.02: 0.03)) + (Math.random()*0.06-0.03);
+    const col = new THREE.Color().setHSL(hue, sat, light);
+    neuronColors.push(col.r, col.g, col.b);
+  }
+}
+
+const N_NEURONS = neuronList.length;
+
+///// — Points: Neurons — /////
+const neuronGeom = new THREE.BufferGeometry();
+neuronGeom.setAttribute('position', new THREE.Float32BufferAttribute(new Float32Array(neuronPositions),3));
+neuronGeom.setAttribute('color', new THREE.Float32BufferAttribute(new Float32Array(neuronColors),3));
+const neuronMat = new THREE.PointsMaterial({size:4.0, vertexColors:true, transparent:true, opacity:0.95, depthWrite:false});
+const neuronPoints = new THREE.Points(neuronGeom, neuronMat);
+scene.add(neuronPoints);
+
+///// — Bezier synapses (криві) — /////
+const synCurves = [];      // {curve, srcIdx}
+const synSegmentPositions = [];
+const synSegmentColors = [];
+const SYN_DIVS = 24;
+for(let i=0;i<N_NEURONS;i++){
+  for(let j=i+1;j<N_NEURONS;j++){
+    const a = neuronList[i], b = neuronList[j];
+    const same = (a.cluster === b.cluster);
+    const dist = a.pos.distanceTo(b.pos);
+    const prob = same ? 0.018 : 0.002; // щільніші зв'язки в середині кластера
+    if(Math.
+    random() < prob && dist < (same? 380 : 700)){
+      const mid = new THREE.Vector3().addVectors(a.pos,b.pos).multiplyScalar(0.5);
+      mid.add(new THREE.Vector3((Math.random()-0.5)*220, (Math.random()-0.5)*120, (Math.random()-0.5)*220));
+      const curve = new THREE.CubicBezierCurve3(a.pos.clone(), mid.clone(), mid.clone(), b.pos.clone());
+      synCurves.push({curve, srcIdx:i});
+      // розклад точок по кривій
+      for(let k=0;k<=SYN_DIVS;k++){
+        const p = curve.getPoint(k/SYN_DIVS);
+        synSegmentPositions.push(p.x,p.y,p.z);
+        // колір – базовий відтінок кластера джерела
+        const hue = clusterHue[a.cluster]/360;
+        const col = new THREE.Color().setHSL(hue, 0.55, 0.62);
+        synSegmentColors.push(col.r,col.g,col.b);
+      }
+    }
+  }
+}
+const synGeom = new THREE.BufferGeometry();
+synGeom.setAttribute('position', new THREE.Float32BufferAttribute(new Float32Array(synSegmentPositions),3));
+synGeom.setAttribute('color', new THREE.Float32BufferAttribute(new Float32Array(synSegmentColors),3));
+const synMat = new THREE.LineBasicMaterial({vertexColors:true, transparent:true, opacity:0.28});
+const synLines = new THREE.LineSegments(synGeom, synMat);
+scene.add(synLines);
+
+///// — Energy particles along synapses — /////
+const energyList = [];
+for(const sc of synCurves){
+  if(Math.random() < 0.36){
+    energyList.push({
+      curve: sc.curve,
+      t: Math.random(),
+      speed: 0.002 + Math.random()*0.004,
+      color: new THREE.Color().copy(new THREE.Color().setHSL(clusterHue[ neuronList[ sc.srcIdx ].cluster ]/360, 0.7, 0.6)),
+      size: 1.6 + Math.random()*2.4
+    });
+  }
+}
+const energyPos = new Float32Array(energyList.length*3);
+const energyCol = new Float32Array(energyList.length*3);
+for(let i=0;i<energyList.length;i++){
+  const c = energyList[i].color;
+  energyCol.set([c.r,c.g,c.b], i*3);
+}
+const energyGeom = new THREE.BufferGeometry();
+energyGeom.setAttribute('position', new THREE.BufferAttribute(energyPos,3));
+energyGeom.setAttribute('color', new THREE.BufferAttribute(energyCol,3));
+const energyMat = new THREE.PointsMaterial({size:3, vertexColors:true, transparent:true, depthWrite:false});
+const energyPoints = new THREE.Points(energyGeom, energyMat);
+scene.add(energyPoints);
+
+///// — Grey fog particles across whole space — /////
+const FOG_COUNT = 3500;
+const fogPosArr = new Float32Array(FOG_COUNT*3);
+const fogVel = [];
+for(let i=0;i<FOG_COUNT;i++){
+  const x=(Math.random()-0.5)*SPACE*2;
+  const y=(Math.random()-0.5)*SPACE*1.4;
+  const z=(Math.random()-0.5)*SPACE*2;
+  fogPosArr.set([x,y,z], i*3);
+  fogVel.push(new THREE.Vector3((Math.random()-0.5)*0.03,(Math.random()-0.5)*0.03,(Math.random()-0.5)*0.03));
+}
+const fogGeom = new THREE.BufferGeometry();
+fogGeom.setAttribute('position', new THREE.BufferAttribute(fogPosArr,3));
+const fogMat = new THREE.PointsMaterial({size:4.2, color:0xaaaaaa, transparent:true, opacity:0.14, depthWrite:false});
+const fogPoints = new THREE.Points(fogGeom, fogMat);
+scene.add(fogPoints);
+
+///// — Instanced dendrites (GPU) — невелике інстансінг-дерево для ефекту гілок — /////
+const DENDRITE_COUNT = Math.min(14000, NEURONS_PER_CLUSTER * CLUSTERS * 12);
+const coneGeo = new THREE.ConeGeometry(0.8, 6, 6);
+const coneMat = new THREE.MeshStandardMaterial({color:0xffffff, transparent:true, opacity:0.9});
+const instDend = new THREE.InstancedMesh(coneGeo, coneMat, DENDRITE_COUNT);
+instDend.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+scene.add(instDend);
+
+let instIdx = 0;
+for(let n=0;n<neuronList.length && instIdx < DENDRITE_COUNT; n++){
+  const center = neuronList[n].pos;
+  const dcount = 6 + Math.floor(Math.random()*10);
+  for(let d=0; d<dcount && instIdx < DENDRITE_COUNT; d++){
+    const ang = Math.random()*Math.PI*2;
+    const len = 8 + Math.random()*28;
+    const dir = new THREE.Vector3(Math.cos(ang), (Math.random()-0.2)*0.6, Math.sin(ang)).normalize();
+    const pos = new THREE.Vector3().copy(center).addScaledVector(dir, len*0.45 + Math.random()*2);
+    const q = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0,1,0), dir);
+    const scale = new THREE.
+    Vector3(1, len/6, 1).multiplyScalar(0.7 + Math.random()*0.9);
+    const m = new THREE.Matrix4().compose(pos, q, scale);
+    instDend.setMatrixAt(instIdx, m);
+    instIdx++;
+  }
+}
+instDend.instanceMatrix.needsUpdate = true;
+
+///// — Volumetric glow shader для ореолів кластерів — /////
+const glowVert = `
+varying vec3 vViewPos;
+uniform vec3 uCenter;
+void main(){
+  vec4 mv = modelViewMatrix * vec4(position,1.0);
+  vViewPos = mv.xyz;
+  gl_Position = projectionMatrix * mv;
+}
+`;
+const glowFrag = `
+precision highp float;
+varying vec3 vViewPos;
+uniform vec3 uCenter;
+uniform vec3 uColor;
+uniform float uRadius;
+uniform mat4 viewMatrix;
+void main(){
+  vec3 centerVS = (viewMatrix * vec4(uCenter,1.0)).xyz;
+  float dist = length(vViewPos - centerVS);
+  float edge = smoothstep(uRadius, 0.0, dist);
+  float core = pow(edge, 1.6);
+  float soft = pow(edge, 4.0);
+  float alpha = clamp(core*0.4 + soft*0.55, 0.0, 1.0);
+  gl_FragColor = vec4(uColor, alpha);
+}
+`;
+function makeGlow(center, hue){
+  const geom = new THREE.SphereGeometry(1, 24, 18);
+  const col = new THREE.Color().setHSL(hue/360, 0.9, 0.55);
+  const mat = new THREE.ShaderMaterial({
+    uniforms: { uCenter:{value:center.clone()}, uColor:{value:col}, uRadius:{value:CLUSTER_RADIUS*1.9} },
+    vertexShader: glowVert, fragmentShader: glowFrag,
+    transparent:true, depthWrite:false, blending:THREE.AdditiveBlending
+  });
+  const mesh = new THREE.Mesh(geom, mat);
+  mesh.position.copy(center);
+  scene.add(mesh);
+  return mesh;
+}
+const glowMeshes = [];
+for(let i=0;i<CLUSTERS;i++){
+  glowMeshes.push(makeGlow(clusterCenters[i], clusterHue[i]));
+}
+
+///// — Керування камерою просте — /////
+let mx=0,my=0; window.addEventListener('mousemove', e=>{ mx=(e.clientX/innerWidth-0.5)*2; my=(e.clientY/innerHeight-0.5)*2; });
+window.addEventListener('resize', ()=>{ camera.aspect = innerWidth/innerHeight; camera.updateProjectionMatrix(); renderer.setSize(innerWidth, innerHeight); });
+
+///// — Анімація — /////
+const tmpV = new THREE.Vector3();
+const synPosAttr = synGeom.getAttribute('position');
+const energyPosAttr = energyGeom.getAttribute('position');
+const fogPosAttr = fogGeom.getAttribute('position');
+
+function waveBoostAt(pos, t){
+  // дуже легкі просторові хвилі для атмосферної взаємодії (alpha-beta-gamma style)
+  let boost = 0;
+  boost += 0.18 * Math.sin(0.0009 * pos.x + t*1.4);
+  boost += 0.12 * Math.sin(0.0014 * pos.y + t*2.3);
+  boost += 0.08 * Math.sin(0.0019 * pos.z + t*3.7);
+  return boost;
+}
+
+function animate(ts){
+  const t = ts * 0.001;
+
+  // камера-орбіт
+  camera.position.x = Math.cos(t*0.06 + mx*0.6) * 920;
+  camera.position.z = Math.sin(t*0.06 + mx*0.6) * 920;
+  camera.position.y = 200 + my*260;
+  camera.lookAt(0,0,0);
+
+  // енергетичні частинки по кривих
+  for(let i=0;i<energyList.length;i++){
+    const e = energyList[i];
+    e.t += e.speed;
+    if(e.t>1) e.t = 0;
+    const p = e.curve.getPoint(e.t);
+    energyPosAttr.setXYZ(i, p.x, p.y, p.z);
+  }
+  energyPosAttr.needsUpdate = true;
+
+  // туман — дрейф і wrap
+  const fpos = fogGeom.getAttribute('position');
+  for(let i=0;i<FOG_COUNT;i++){
+    const idx = i*3;
+    let x = fpos.array[idx] + fogVel[i].x*6;
+    let y = fpos.array[idx+1] + fogVel[i].y*6;
+    let z = fpos.array[idx+2] + fogVel[i].z*6;
+    if(x < -SPACE) x = SPACE; if(x > SPACE) x = -SPACE;
+    if(y < -SPACE) y = SPACE; if(y > SPACE) y = -SPACE;
+    if(z < -SPACE) z = SPACE; if(z > SPACE) z = -SPACE;
+    fpos.setXYZ(i, x, y, z);
+  }
+  fpos.needsUpdate = true;
+
+  // оновлення кольору нейронів під впливом просторових хвиль
+  const nc = neuronGeom.getAttribute('color');
+  for(let i=0;i<N_NEURONS;i++){
+    const x = neuronGeom.getAttribute('position').getX(i);
+    const y = neuronGeom.getAttribute('position').getY(i);
+    const z = neuronGeom.getAttribute('position').getZ(i);
+    tmpV.set(x,y,z);
+    const wb = waveBoostAt(tmpV, t);
+    // модулюємо яскравість кольору нейрона
+    const baseR = neuronColors[i*3], baseG = neuronColors[i*3+1], baseB = neuronColors[i*3+2];
+    const scale = 1 + wb*0.9;
+    nc.setXYZ(i, Math.max(0,Math.min(1, baseR*scale)), Math.max(0,Math.
+    min(1, baseG*scale)), Math.max(0,Math.min(1, baseB*scale)));
+  }
+  nc.needsUpdate = true;
+
+  // оновлюємо синуси-криві точок (якщо ми хоч трохи рухаємо контрольні точки — тут вони статичні, лиш оновимо позиції)
+  let ptr = 0;
+  for(const sc of synCurves){
+    for(let k=0;k<=SYN_DIVS;k++){
+      const p = sc.curve.getPoint(k/SYN_DIVS);
+      synPosAttr.setXYZ(ptr, p.x, p.y, p.z);
+      ptr++;
+    }
+  }
+  synPosAttr.needsUpdate = true;
+
+  // пульсація glow ореолів
+  for(let i=0;i<glowMeshes.length;i++){
+    const u = glowMeshes[i].material.uniforms;
+    const base = CLUSTER_RADIUS * (1.8 + 0.12*Math.sin(t*0.7 + i));
+    u.uRadius.value = base;
+    const hue = (clusterHue[i] + Math.sin(t*0.45+i*0.3)*6.0) % 360;
+    u.uColor.value.setHSL(hue/360, 0.88, 0.56);
+    u.uCenter.value.copy(clusterCenters[i]);
+  }
+
+  // невелика "свай" для дендритів (оновлюємо частково для економії)
+  if(instDend){
+    // невелике локальне коливання через waveBoostAt
+    const dummy = new THREE.Object3D();
+    let id = 0;
+    for(let n=0;n<neuronList.length && id < DENDRITE_COUNT; n++){
+      const center = neuronList[n].pos;
+      const wb = waveBoostAt(center, t);
+      const cnt = 5; // оновити кілька інстансів навколо нейрона
+      for(let k=0;k<cnt && id < DENDRITE_COUNT; k++, id++){
+        instDend.getMatrixAt(id, dummy.matrix);
+        dummy.matrix.decompose(dummy.position, dummy.quaternion, dummy.scale);
+        const q = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1,0,0), Math.sin(t*2 + id*0.12)*0.06 * wb);
+        dummy.quaternion.multiply(q);
+        dummy.matrix.compose(dummy.position, dummy.quaternion, dummy.scale);
+        instDend.setMatrixAt(id, dummy.matrix);
+      }
+    }
+    instDend.instanceMatrix.needsUpdate = true;
+  }
+
+  renderer.render(scene, camera);
+  requestAnimationFrame(animate);
+}
+requestAnimationFrame(animate);
+
+</script>
+</body>
+</html>

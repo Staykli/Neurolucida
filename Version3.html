@@ -1,0 +1,281 @@
+
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Neuron Network with Fog and Waves</title>
+<style>
+  body{margin:0;background:#0b0b10;overflow:hidden}
+  canvas{display:block}
+</style>
+</head>
+<body>
+<script type="module">
+import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.154.0/build/three.module.js';
+
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(50, innerWidth/innerHeight, 0.1, 3000);
+camera.position.set(0,0,600);
+
+const renderer = new THREE.WebGLRenderer({antialias:true, alpha:true});
+renderer.setSize(innerWidth,innerHeight);
+document.body.appendChild(renderer.domElement);
+
+scene.add(new THREE.DirectionalLight(0xffffff,0.8));
+scene.add(new THREE.AmbientLight(0x555555));
+
+// ===== NEURONS =====
+let positions=[], colors=[], distances=[], neuronOffsets=[], neuronCenters=[];
+const neurons = 50;
+const maxDepth = 6;
+const baseBranchLen = 18;
+const networkSize = 400;
+
+function addBranch(x,y,z,dir,depth,dist,neuronIndex){
+    if(depth>maxDepth) return;
+    const len = baseBranchLen*(0.7 + Math.random()*0.6);
+    const nx = x + dir.x*len + (Math.random()-0.5)*4;
+    const ny = y + dir.y*len + (Math.random()-0.5)*4;
+    const nz = z + dir.z*len + (Math.random()-0.5)*4;
+
+    positions.push(x,y,z,nx,ny,nz);
+    colors.push(0,0,0,0,0,0);
+    distances.push(dist,dist+len);
+    neuronOffsets.push(neuronIndex,neuronIndex);
+
+    const nChildren = depth<2?3:(Math.random()>0.6?2:1);
+    for(let i=0;i<nChildren;i++){
+        const angle = Math.random()*Math.PI*2;
+        const tilt = (Math.random()-0.5)*0.7;
+        const ndir = new THREE.Vector3(
+            dir.x*0.6 + Math.cos(angle)*0.6 + tilt*0.2,
+            dir.y*0.6 + Math.sin(angle)*0.6 + (Math.random()-0.5)*0.2,
+            dir.z*0.6 + (Math.random()-0.5)*0.4
+        ).normalize();
+        addBranch(nx,ny,nz,ndir,depth+1,dist+len,neuronIndex);
+    }
+}
+
+// Generate neurons
+for(let n=0;n<neurons;n++){
+    const nx = (Math.random()-0.5)*networkSize;
+    const ny = (Math.random()-0.5)*networkSize;
+    const nz = (Math.random()-0.5)*networkSize;
+    neuronCenters.push(new THREE.Vector3(nx,ny,nz));
+    addBranch(nx,ny,nz,new THREE.Vector3(0,1,0),0,0,n);
+}
+
+// Branch geometry
+const geom = new THREE.BufferGeometry();
+geom.setAttribute('position', new THREE.Float32BufferAttribute(positions,3));
+geom.setAttribute('color', new THREE.Float32BufferAttribute(colors,3));
+geom.setAttribute('dist', new THREE.Float32BufferAttribute(distances,1));
+geom.setAttribute('neuron', new THREE.Float32BufferAttribute(neuronOffsets,1));
+const material = new THREE.LineBasicMaterial({vertexColors:true, transparent:true});
+const lines = new THREE.LineSegments(geom,material);
+scene.add(lines);
+
+// ===== SYNAPSES =====
+const synCurves = [];
+const synColors = [];
+const synDivs = 20;
+for(let i=0;i<neurons;i++){
+    const src = neuronCenters[i];
+    const targets = [];
+    while(targets.length<3){
+        const j = Math.floor(Math.random()*neurons);
+        if(j!==i && !targets.includes(j)) targets.push(j);
+    }
+    for(let t of targets){
+        const trg = neuronCenters[t];
+        const mid = new THREE.Vector3(
+            (src.x+trg.x)/2 + (Math.random()-0.5)*50,
+            (src.y+trg.y)/2 + (Math.random()-0.5)*50,
+            (src.z+trg.z)/2 + (Math.random()-0.5)*50
+        );
+        const curve = new THREE.CubicBezierCurve3(src, mid, mid, trg);
+        synCurves.push({curve, srcIndex:i});
+        for(let k=0;k<=synDivs;k++) synColors.push(0.2,0.4,1);
+    }
+}
+const synPos = new Float32Array(synCurves.length*(synDivs+1)*3);
+const synGeom = new THREE.BufferGeometry();
+synGeom.setAttribute('position', new THREE.BufferAttribute(synPos,3));
+const synColAttr = new THREE.Float32BufferAttribute(synColors,3);
+synGeom.setAttribute('color', synColAttr);
+const synMat = new THREE.LineBasicMaterial({vertexColors:true,transparent:true,opacity:0.7});
+const synLines = new THREE.LineSegments(synGeom,synMat);
+scene.add(synLines);
+
+// ===== PARTICLES BETWEEN NEURONS =====
+const particleCount = 2000;
+const particlePositions = new Float32Array(particleCount*3);
+const particleColors = new Float32Array(particleCount*3);
+for(let i=0;i<particleCount;i++){
+    const n1 = Math.floor(Math.random()*neurons);
+    const n2 = Math.floor(Math.random()*neurons);
+    const pos = new THREE.Vector3().lerpVectors(neuronCenters[n1], neuronCenters[n2], Math.random());
+    particlePositions[i*3] = pos.x;
+    particlePositions[i*3+1] = pos.y;
+    particlePositions[i*3+2] = pos.z;
+    particleColors[i*3] = 0.2;
+    particleColors[i*3+1] = 0.4;
+    particleColors[i*3+2] = 1.0;
+}
+const particleGeom = new THREE.BufferGeometry();
+particleGeom.setAttribute('position', new THREE.BufferAttribute(particlePositions,3));
+particleGeom.setAttribute('color', new THREE.BufferAttribute(particleColors,3));
+const particleMat = new THREE.PointsMaterial({vertexColors:true,size:2,transparent:true,opacity:0.6});
+const particles = new THREE.Points(particleGeom, particleMat);
+scene.add(particles);
+
+// ===== GREY FOG PARTICLES =====
+const fogParticleCount = 3000;
+const fogPositions = new Float32Array(fogParticleCount*3);
+const fogColors = new Float32Array(fogParticleCount*3);
+for(let i=0;i<fogParticleCount;i++){
+    fogPositions[i*3] = (Math.random()-0.5)*800;
+    fogPositions[i*3+1] = (Math.random()-0.5)*800;
+    fogPositions[i*3+2] = (Math.random()-0.5)*800;
+    const c = 0.3 + Math.random()*0.2;
+    fogColors[i*3] = c;
+    fogColors[i*3+1] = c;
+    fogColors[i*3+2] = c;
+}
+const fogGeom = new THREE.BufferGeometry();
+fogGeom.setAttribute('position', new THREE.BufferAttribute(fogPositions,3));
+fogGeom.setAttribute('color', new THREE.BufferAttribute(fogColors,3));
+const fogMat = new THREE.PointsMaterial({vertexColors:true,size:4,transparent:true,opacity:0.3});
+const fogParticles = new THREE.Points(fogGeom,fogMat);
+scene.add(fogParticles);
+
+// ===== INTERACTION =====
+let mouseX=0, mouseY=0;
+document.addEventListener('mousemove', e=>{
+    mouseX = (e.clientX/innerWidth -0.5)*2;
+    mouseY = (e.clientY/innerHeight -0.5)*2;
+});
+
+// ===== VOLTAGE TO RGB =====
+function voltageToRgb(v){
+    const t = (v+80)/25;
+    if(t<0.5){const tt=t*2; return [0.6*(1-tt)+0.2*tt,0.1*(1-tt)+0.4*tt,0.8*(1-tt)+1*tt];}
+    else {const tt=(t-0.5)*2; return [0.2*(1-tt)+1*tt,0.4*(1-tt)+0.6*tt,1*(1-tt)+0.15*tt];}
+}
+
+// ===== ATTRIBUTES =====
+const colAttr = geom.getAttribute('color');
+const distAttr = geom.getAttribute('dist');
+const neuronAttr = geom.getAttribute('neuron');
+const partPosAttr = particleGeom.getAttribute('position');
+const partColAttr = particleGeom.getAttribute('color');
+const fogPosAttr = fogGeom.getAttribute('position');
+const fogColAttr = fogGeom.getAttribute('color');
+
+const baseV=-80, amp=25;
+const waves=[0.02,0.03,0.015];
+const neuronPulse = new Array(neurons).fill(0);
+
+const globalWaves = [
+    {speed:0.01, amp:0.3, phase:0},
+    {speed:0.015, amp:0.2, phase:Math.PI/3},
+    {speed:0.02, amp:0.15, phase:Math.PI/6},
+];
+
+// ===== ANIMATE =====
+function animate(t){
+    requestAnimationFrame(animate);
+    const time = t*0.001;
+
+    // Camera
+    camera.position.x += (mouseX*600 - camera.position.x)*0.05;
+    camera.position.y += (-mouseY*400 - camera.position.y)*0.05;
+    camera.position.z = 600 + Math.sin(time*0.1)*50;
+    camera.lookAt(0,0,0);
+
+    // Neuron spikes
+    for(let n=0;n<neurons;n++){
+        if(Math.random()<0.002) neuronPulse[n]=1;
+        if(neuronPulse[n]>0.7) neuronPulse[n]+=0.3*Math.sin(time*15);
+        neuronPulse[n]*=0.95;
+    }
+
+    // Branches
+    for(let i=0;i<distAttr.count;i++){
+        const d = distAttr.getX(i);
+        const neuronIndex = neuronAttr.getX(i);
+        let v = baseV;
+        for(let w of waves) v+=amp/3*Math.sin(time*6 - d*w*6);
+        v += amp*0.3*Math.sin(time*3 + neuronIndex*1.5*Math.random());
+        v += neuronPulse[neuronIndex]*amp;
+
+        let waveBoost=0;
+        for(let w of globalWaves) waveBoost+=w.amp*Math.sin(time*6*w.speed*100 + w.phase);
+        v += waveBoost*amp;
+
+        const [r,g,b] = voltageToRgb(v);
+        colAttr.setXYZ(i,r,g,b);
+    }
+    colAttr.needsUpdate=true;
+
+// Synapses
+    let ptr=0;
+    for(let sc of synCurves){
+        const {curve, srcIndex} = sc;
+        for(let i=0;i<=synDivs;i++){
+            const t1=i/synDivs;
+            const pos = curve.getPoint(t1);
+            synPos[ptr++] = pos.x; synPos[ptr++] = pos.y; synPos[ptr++] = pos.z;
+
+            let intensity=Math.min(Math.max(neuronPulse[srcIndex]*0.5 + 0.5*Math.sin(time*5 - t1*6),0),1);
+            for(let w of globalWaves) intensity += w.amp*Math.sin(time*6*w.speed*100 + w.phase);
+            intensity=Math.min(intensity,1);
+            synColAttr.setXYZ(i + synCurves.indexOf(sc)*(synDivs+1),
+                0.2*(1-intensity)+1*intensity,
+                0.4*(1-intensity)+1*intensity,
+                1*intensity);
+        }
+    }
+    synGeom.attributes.position.needsUpdate=true;
+    synColAttr.needsUpdate=true;
+
+    // Particles between neurons
+    for(let i=0;i<particleCount;i++){
+        const n1=Math.floor(Math.random()*neurons);
+        const n2=Math.floor(Math.random()*neurons);
+        const tPart = (Math.sin(time*0.5 + i)*0.5+0.5);
+        const pos=new THREE.Vector3().lerpVectors(neuronCenters[n1],neuronCenters[n2],tPart);
+        partPosAttr.setXYZ(i,pos.x,pos.y,pos.z);
+
+        let intensity=0;
+        for(let w of globalWaves) intensity += w.amp*Math.sin(time*6*w.speed*100 + w.phase);
+        intensity=Math.min(Math.max(intensity,0),1);
+        partColAttr.setXYZ(i,0.2*(1-intensity)+1*intensity,0.4*(1-intensity)+1*intensity,1*intensity);
+    }
+    partPosAttr.needsUpdate=true;
+    partColAttr.needsUpdate=true;
+
+    // Fog particles
+    for(let i=0;i<fogParticleCount;i++){
+        fogPositions[i*3+1] += Math.sin(time*0.1 + i)*0.05;
+        if(fogPositions[i*3+1]>400) fogPositions[i*3+1] = -400;
+
+        const c = 0.3 + 0.2*Math.sin(time + i);
+        fogColAttr.setXYZ(i,c,c,c);
+    }
+    fogPosAttr.needsUpdate=true;
+    fogColAttr.needsUpdate=true;
+
+    renderer.render(scene,camera);
+}
+animate(0);
+
+window.addEventListener('resize',()=>{
+    camera.aspect=innerWidth/innerHeight;
+    camera.updateProjectionMatrix();
+    renderer.setSize(innerWidth,innerHeight);
+});
+</script>
+</body>
+</html>

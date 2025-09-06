@@ -1,0 +1,300 @@
+
+<!doctype html>
+<html lang="uk">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>3D Neuron Clusters — Volumetric Glow</title>
+<style>
+  html,body{margin:0;height:100%;background:#0a0b10;overflow:hidden}
+  canvas{display:block}
+</style>
+</head>
+<body>
+<script type="module">
+import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.154.0/build/three.module.js';
+
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(55, innerWidth/innerHeight, 0.1, 5000);
+camera.position.set(0,180,820);
+
+const renderer = new THREE.WebGLRenderer({antialias:true});
+renderer.setSize(innerWidth, innerHeight);
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+document.body.appendChild(renderer.domElement);
+
+// базове світло
+scene.add(new THREE.AmbientLight(0x404040, 1.2));
+const dir = new THREE.DirectionalLight(0xffffff, 0.7);
+dir.position.set(1,1,1);
+scene.add(dir);
+
+// ---------------------- параметри мережі ----------------------
+const CLUSTERS = 5;
+const NEURONS_PER_CLUSTER = 80;
+const CLUSTER_RADIUS = 160;
+const SPACE = 800;
+
+const TYPE_COLORS = {
+  excitatory: new THREE.Color(0x6aa8ff),
+  inhibitory: new THREE.Color(0xff9a55),
+  modulatory: new THREE.Color(0xf0f06a)
+};
+const TYPES = ['excitatory','inhibitory','modulatory'];
+
+const clusterCenters = [];
+const clusterHues = [];
+const glowMeshes = [];
+const neuronPositions = [];
+const neuronColors = [];
+const neuronTypeIdx = [];
+const linksPositions = [];
+const linksColors = [];
+const energyParticles = [];
+const fogPositions = [];
+const fogVel = [];
+// --------------------------------------------------------------
+
+// розкладка кластерів
+for(let i=0;i<CLUSTERS;i++){
+  clusterCenters.push(new THREE.Vector3(
+    (Math.random()-0.5)*SPACE,
+    (Math.random()-0.5)*SPACE*0.5,
+    (Math.random()-0.5)*SPACE
+  ));
+  clusterHues.push(200 + Math.random()*140); // для glow відтінок
+}
+
+// генеруємо нейрони в кластерах
+const neuronCenters = [];
+for(let c=0;c<CLUSTERS;c++){
+  for(let i=0;i<NEURONS_PER_CLUSTER;i++){
+    // щільніше ближче до центру
+    const r = Math.sqrt(Math.random()) * CLUSTER_RADIUS;
+    const th = Math.random()*Math.PI*2;
+    const ph = Math.acos(2*Math.random()-1);
+    const offset = new THREE.Vector3(
+      r*Math.sin(ph)*Math.cos(th),
+      r*Math.cos(ph)*0.6,
+      r*Math.sin(ph)*Math.sin(th)
+    );
+    const p = new THREE.Vector3().addVectors(clusterCenters[c], offset);
+    neuronCenters.push({p, cluster:c});
+    neuronPositions.push(p.x, p.y, p.z);
+
+    const type = TYPES[Math.floor(Math.random()*TYPES.length)];
+    neuronTypeIdx.push(type);
+    const col = TYPE_COLORS[type];
+    neuronColors.push(col.r, col.g, col.b);
+  }
+}
+
+// точки-нейрони
+const neuronGeom = new THREE.BufferGeometry();
+neuronGeom.setAttribute('position', new THREE.Float32BufferAttribute(new Float32Array(neuronPositions),3));
+neuronGeom.setAttribute('color', new THREE.Float32BufferAttribute(new Float32Array(neuronColors),3));
+const neuronMat = new THREE.PointsMaterial({size:4, vertexColors:true, transparent:true, opacity:0.95});
+const neurons = new THREE.Points(neuronGeom, neuronMat);
+scene.add(neurons);
+
+// зв’язки: щільніше в середині кластерів, рідше між
+for(let i=0;i<neuronCenters.length;i++){
+  for(let j=i+1;j<neuronCenters.length;j++){
+    const a = neuronCenters[i], b = neuronCenters[j];
+    const d = a.p.distanceTo(b.p);
+    const same = (a.cluster===b.cluster);
+    const p = same ? 0.015 : 0.002; // ймовірність зв’язку
+    if(Math.random()<p && d< (same? 220: 320)){
+      linksPositions.push(a.p.x,a.p.y,a.p.z, b.p.x,b.p.y,b.p.z);
+      const hue = clusterHues[a.cluster];
+      const c = new THREE.Color().setHSL(hue/360, 0.5, 0.65);
+      linksColors.push(c.r,c.g,c.b, c.r,c.g,c.b);
+
+      // енергетична частинка по ребру
+      energyParticles.push({
+        a: a.p, b: b.p, t: Math.random(), speed: 0.002 + Math.random()*0.003,
+        color: TYPE_COLORS[neuronTypeIdx[i]].clone(), size: 2+Math.random()*2
+      });
+    }
+  }
+}
+
+const linkGeom = new THREE.
+BufferGeometry();
+linkGeom.setAttribute('position', new THREE.Float32BufferAttribute(new Float32Array(linksPositions),3));
+linkGeom.setAttribute('color', new THREE.Float32BufferAttribute(new Float32Array(linksColors),3));
+const linkMat = new THREE.LineBasicMaterial({vertexColors:true, transparent:true, opacity:0.25});
+const links = new THREE.LineSegments(linkGeom, linkMat);
+scene.add(links);
+
+// енергетичні частинки як Points
+const energyPos = new Float32Array(energyParticles.length*3);
+const energyCol = new Float32Array(energyParticles.length*3);
+const energySizes = new Float32Array(energyParticles.length);
+for(let i=0;i<energyParticles.length;i++){
+  const c = energyParticles[i].color;
+  energyCol.set([c.r,c.g,c.b], i*3);
+  energySizes[i] = energyParticles[i].size;
+}
+const energyGeom = new THREE.BufferGeometry();
+energyGeom.setAttribute('position', new THREE.BufferAttribute(energyPos,3));
+energyGeom.setAttribute('color', new THREE.BufferAttribute(energyCol,3));
+const energyMat = new THREE.PointsMaterial({size:3, vertexColors:true, transparent:true, opacity:0.85, depthWrite:false});
+const energyPoints = new THREE.Points(energyGeom, energyMat);
+scene.add(energyPoints);
+
+// сірий туман — великий куб простору
+const FOG_COUNT = 3500;
+const fogPosArr = new Float32Array(FOG_COUNT*3);
+for(let i=0;i<FOG_COUNT;i++){
+  const x=(Math.random()-0.5)*SPACE*2;
+  const y=(Math.random()-0.5)*SPACE*1.6;
+  const z=(Math.random()-0.5)*SPACE*2;
+  fogPosArr.set([x,y,z], i*3);
+  fogPositions.push(new THREE.Vector3(x,y,z));
+  fogVel.push(new THREE.Vector3((Math.random()-0.5)*0.04,(Math.random()-0.5)*0.04,(Math.random()-0.5)*0.04));
+}
+const fogGeom = new THREE.BufferGeometry();
+fogGeom.setAttribute('position', new THREE.BufferAttribute(fogPosArr,3));
+const fogMat = new THREE.PointsMaterial({size:4, color:0xbbbbbb, transparent:true, opacity:0.15, depthWrite:false});
+const fogPoints = new THREE.Points(fogGeom, fogMat);
+scene.add(fogPoints);
+
+// ------------------ volumetric glow (шейдер) ------------------
+const glowVertex = `
+  varying vec3 vViewPos;
+  uniform vec3 uCenter;
+  void main(){
+    vec4 mvPosition = modelViewMatrix * vec4(position,1.0);
+    vViewPos = mvPosition.xyz;
+    gl_Position = projectionMatrix * mvPosition;
+  }
+`;
+
+const glowFragment = `
+  precision highp float;
+  varying vec3 vViewPos;
+  uniform vec3 uCenter;
+  uniform vec3 uColor;
+  uniform float uRadius;   // у світ-просторі
+  uniform mat4 viewMatrix;
+
+  void main(){
+    // центр в view-space
+    vec3 centerVS = (viewMatrix * vec4(uCenter,1.0)).xyz;
+    float dist = length(vViewPos - centerVS);
+
+    // м'яка сферична альфа
+    float edge = smoothstep(uRadius, 0.0, dist);
+    float core = pow(edge, 1.8);           // форма ядра
+    float soft = pow(edge, 4.0);           // м'яка оболонка
+    float alpha = clamp(core*0.35 + soft*0.4, 0.0, 1.0);
+
+    vec3 col = uColor;
+    gl_FragColor = vec4(col, alpha);
+  }
+`;
+
+function makeGlow(center, hue){
+  const sphere = new THREE.SphereGeometry(1, 16, 16); // масштабуватимемо через uRadius
+  const col = new THREE.Color().setHSL(hue/360, 0.85, 0.55);
+  const mat = new THREE.ShaderMaterial({
+    uniforms: {
+      uCenter: {value: center.clone()},
+      uColor: {value: col},
+      uRadius: {value: CLUSTER_RADIUS*1.9}
+    },
+    vertexShader: glowVertex,
+    fragmentShader: glowFragment,
+    transparent: true,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending
+  });
+  const mesh = new THREE.Mesh(sphere, mat);
+  mesh.position.copy(center);
+  // маленька блямбочка-опора (не видима, але тримає матрицю)
+  mesh.scale.set(1,1,1);
+  scene.add(mesh);
+  return mesh;
+}
+
+for(let i=0;i<CLUSTERS;i++){
+  glowMeshes.push(makeGlow(clusterCenters[i], clusterHues[i]));
+}
+
+// ------------------ керування камерою (простий орбіт) ------------------
+let mouseX=0, mouseY=0, targetX=0, targetY=0;
+window.addEventListener('mousemove', (e)=>{
+  mouseX = (e.clientX / innerWidth - 0.5)*2;
+  mouseY = (e.clientY / innerHeight - 0.5)*2;
+});
+window.addEventListener('resize', ()=>{
+  camera.aspect = innerWidth/innerHeight;
+  camera.updateProjectionMatrix();
+renderer.setSize(innerWidth, innerHeight);
+});
+
+// ------------------ анімація ------------------
+const tmp = new THREE.Vector3();
+function animate(timeMs){
+  const t = timeMs*0.001;
+
+  // плавний політ камери
+  targetX += (mouseX - targetX)*0.06;
+  targetY += (mouseY - targetY)*0.06;
+  const R = 900;
+  camera.position.x = Math.cos(t*0.09 + targetX*0.8) * R;
+  camera.position.z = Math.sin(t*0.09 + targetX*0.8) * R;
+  camera.position.y = 180 + targetY*200;
+  camera.lookAt(0,0,0);
+
+  // енергетичні частинки вздовж ребер
+  const ep = energyGeom.getAttribute('position');
+  for(let i=0;i<energyParticles.length;i++){
+    const p = energyParticles[i];
+    p.t += p.speed;
+    if(p.t>1) p.t = 0.0;
+    tmp.copy(p.b).sub(p.a).multiplyScalar(p.t).add(p.a);
+    ep.setXYZ(i, tmp.x, tmp.y, tmp.z);
+  }
+  ep.needsUpdate = true;
+
+  // туман повільно плаває і циклічно перетікає простір
+  const fpos = fogGeom.getAttribute('position');
+  for(let i=0;i<fogPositions.length;i++){
+    const v = fogPositions[i];
+    v.add(fogVel[i]);
+    // wrap
+    if(v.x<-SPACE) v.x= SPACE;
+    if(v.x> SPACE) v.x=-SPACE;
+    if(v.y<-SPACE) v.y= SPACE;
+    if(v.y> SPACE) v.y=-SPACE;
+    if(v.z<-SPACE) v.z= SPACE;
+    if(v.z> SPACE) v.z=-SPACE;
+    fpos.setXYZ(i, v.x, v.y, v.z);
+  }
+  fpos.needsUpdate = true;
+
+  // пульсація glow: радіус та інтенсивність
+  for(let i=0;i<glowMeshes.length;i++){
+    const u = glowMeshes[i].material.uniforms;
+    const base = CLUSTER_RADIUS*1.8;
+    const pulse = 1.0 + 0.22*Math.sin(t*1.4 + i*0.7);
+    u.uRadius.value = base * pulse;
+    // легке хроматичне дихання відтінку
+    const hue = (clusterHues[i] + Math.sin(t*0.5+i)*3.0) % 360;
+    u.uColor.value.setHSL(hue/360, 0.85, 0.55);
+    u.uCenter.value.copy(clusterCenters[i]);
+  }
+
+  // легке мерехтіння розміру нейронів
+  neuronMat.size = 3.6 + Math.sin(t*2.0)*0.6;
+
+  renderer.render(scene, camera);
+  requestAnimationFrame(animate);
+}
+requestAnimationFrame(animate);
+</script>
+</body>
+</html>
